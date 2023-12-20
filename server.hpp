@@ -2,6 +2,7 @@
 #include <map>
 #include <iostream>
 #include <asio.hpp>
+#include <regex>
 
 ////////////////////////////////////////////////////////////////////////////////
 // Server //////////////////////////////////////////////////////////////////////
@@ -37,11 +38,7 @@ class Server
     // Signature d'un processeur.
     typedef void (Server::*Processor) (ClientPtr, const std::string &);
     // Processeurs.
-    static const std::map<std::string, Processor> PROCESSORS
-    {
-      {"/list", &Server::process_list},
-    };
-
+    static const std::map<std::string, Processor> PROCESSORS;
 
   private:
     asio::io_context m_context;
@@ -55,8 +52,12 @@ class Server
     ClientPtr find (const std::string & alias);
     // Traitement d'une commande.
     void process (ClientPtr, const std::string &);
+    // Traitement de la commande quit.
+    void process_quit (ClientPtr client, const std::string &);
     // Traitement de la commande list.
-    void process_list (ClientPtr);
+    void process_list (ClientPtr client, const std::string & = "");
+    // Traitement de la commande private.
+    void process_private (ClientPtr client, const std::string & = "");
     // Processeurs.
     void process_message (ClientPtr, const std::string &);
     // Diffusion d'un message.
@@ -112,7 +113,9 @@ void Server::Client::start ()
           m_server->broadcast("#connected " + alias, self);
           self->m_active = true;
           self->read();
-
+        }
+        else
+          self->write(Server::INVALID_ALIAS);
       }
       else
       {
@@ -161,6 +164,8 @@ void Server::Client::read ()
       else
       {
         std::cout << "Déconnexion intempestive !" << std::endl;
+        m_server->broadcast("#disconnected " + self->alias(), self);
+        m_server->m_clients.remove (self);
         m_server->process_quit (self, std::string {});
       }
     });
@@ -200,14 +205,14 @@ void Server::start ()
 
 Server::ClientPtr Server::find (const std::string & alias)
 {
-    for (int i = 0; i < this->m_clients.size(); i++)
+  for (ClientPtr client: this->m_clients)
   {
-    if(this->m_clients[i]->alias() == alias)
+    if(client->alias() == alias)
     {
-      return this->m_clients[i];
+      return client;
     }
   }
-
+  
   return nullptr;
 }
 
@@ -250,50 +255,66 @@ void Server::process (ClientPtr client, const std::string & message)
       {
         Server::Processor proc = search->second;
 
-        (this->*proc)(stream);
+        (this->*proc)(client, data);
       }
       else {
-        client.write(Server::INVALID_COMMAND);
-
+        client->write(Server::INVALID_COMMAND);
+      }
     }
     else
       process_message (client, message);
   }
 }
 
-void Server::process_list (ClientPtr client)
+void Server::process_private(ClientPtr client, const std::string & data) {
+  int delimiterPosition = data.find(' ');
+  std::string recipientName = data.substr(0, delimiterPosition);
+  std::string message = data.substr(delimiterPosition + 1, data.length() - 1);
+
+  ClientPtr recipientClient = find(recipientName);
+  if(recipientClient != nullptr)
+  {
+    recipientClient->write("#private " + client->alias() + " " + message);
+  }
+}
+
+void Server::process_list (ClientPtr client, const std::string & data)
 {
   std::string m = "#list ";
-  for (int i = 0; i < m_clients.size(); i++)
+  for (ClientPtr client: m_clients)
   {
-    m += m_clients[i].alias() + " ";
+    m += client->alias() + " ";
+    std::cout << "-> [" << client->alias() << "]" << std::endl;
   }
-  client.write(m);
+  m.pop_back();
+  client->write(m);
+}
 
 
 void Server::process_message (ClientPtr client, const std::string & data)
 {
-  std::string m = "<b>" + client->alias () + "</b> : " + data;
+  std::string m = "<b>" + client->alias() + "</b> : " + data;
   broadcast (m);
 }
 
-void Server::process_quit (ClientPtr client, const std::string &)
+void Server::process_quit (ClientPtr client, const std::string & data)
 {
-  client->stop();
+    client->stop();
 }
 
 void Server::broadcast (const std::string & message, ClientPtr emitter)
 {
     std::string m = message + '\n';
-    asio::async_write(socket_, asio::buffer(m.data_, m.length),
-        [this, self](std::error_code ec, std::size_t /*length*/)
-        {
-
-
+    for (ClientPtr client: this->m_clients) {
+      if (client != emitter)
+        client->write(message);
+    }
 }
 
 const std::map<std::string, Server::Processor> Server::PROCESSORS {
-  {"/quit", &Server::process_quit}
+  {"/quit", &Server::process_quit},
+  {"/list", &Server::process_list},
+  {"/private", &Server::process_private},
 };
 
 const std::string Server::INVALID_ALIAS     {"#error invalid_alias"};
