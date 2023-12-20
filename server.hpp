@@ -37,7 +37,11 @@ class Server
     // Signature d'un processeur.
     typedef void (Server::*Processor) (ClientPtr, const std::string &);
     // Processeurs.
-    static const std::map<std::string, Processor> PROCESSORS;
+    static const std::map<std::string, Processor> PROCESSORS
+    {
+      {"/list", &Server::process_list},
+    };
+
 
   private:
     asio::io_context m_context;
@@ -51,6 +55,8 @@ class Server
     ClientPtr find (const std::string & alias);
     // Traitement d'une commande.
     void process (ClientPtr, const std::string &);
+    // Traitement de la commande list.
+    void process_list (ClientPtr);
     // Processeurs.
     void process_message (ClientPtr, const std::string &);
     // Diffusion d'un message.
@@ -96,7 +102,17 @@ void Server::Client::start ()
       // Erreur ?
       if (! ec) {
         std::istream is {&m_buffer};
-        // TODO
+        std::string alias;
+        std::getline (is, alias, ' ');
+        alias = std::regex_replace(alias, std::regex("\\s"), "");
+        if(m_server->find(alias) == nullptr) {
+          self->m_alias = alias;
+          self->write("#alias " + alias);
+          m_server->process_list(self);
+          m_server->broadcast("#connected " + alias, self);
+          self->m_active = true;
+          self->read();
+
       }
       else
       {
@@ -184,7 +200,14 @@ void Server::start ()
 
 Server::ClientPtr Server::find (const std::string & alias)
 {
-  // TODO
+    for (int i = 0; i < this->m_clients.size(); i++)
+  {
+    if(this->m_clients[i]->alias() == alias)
+    {
+      return this->m_clients[i];
+    }
+  }
+
   return nullptr;
 }
 
@@ -222,12 +245,31 @@ void Server::process (ClientPtr client, const std::string & message)
       // Recherche du processeur correspondant.
       // - S'il existe, l'appeler ;
       // - Sinon, "#invalid_command" !
-      // TODO
+      auto search = PROCESSORS.find(command);
+      if(search != PROCESSORS.end())
+      {
+        Server::Processor proc = search->second;
+
+        (this->*proc)(stream);
+      }
+      else {
+        client.write(Server::INVALID_COMMAND);
+
     }
     else
       process_message (client, message);
   }
 }
+
+void Server::process_list (ClientPtr client)
+{
+  std::string m = "#list ";
+  for (int i = 0; i < m_clients.size(); i++)
+  {
+    m += m_clients[i].alias() + " ";
+  }
+  client.write(m);
+
 
 void Server::process_message (ClientPtr client, const std::string & data)
 {
@@ -237,12 +279,17 @@ void Server::process_message (ClientPtr client, const std::string & data)
 
 void Server::process_quit (ClientPtr client, const std::string &)
 {
-  // TODO
+  client->stop();
 }
 
 void Server::broadcast (const std::string & message, ClientPtr emitter)
 {
-  // TODO
+    std::string m = message + '\n';
+    asio::async_write(socket_, asio::buffer(m.data_, m.length),
+        [this, self](std::error_code ec, std::size_t /*length*/)
+        {
+
+
 }
 
 const std::map<std::string, Server::Processor> Server::PROCESSORS {
